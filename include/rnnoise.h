@@ -49,7 +49,17 @@ extern "C" {
 #endif
 
 typedef struct DenoiseState DenoiseState;
+typedef struct DenoiseMultiState DenoiseMultiState;
 typedef struct RNNModel RNNModel;
+
+/**
+ * Maximum number of independent channels supported by the multichannel API.
+ */
+#define RNNOISE_MAX_CHANNELS 8
+
+/** Error codes returned by the multichannel API. */
+#define RNNOISE_EINVAL (-1)
+#define RNNOISE_ENOMEM (-2)
 
 /**
  * Return the size of DenoiseState
@@ -92,6 +102,52 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
  * in and out must be at least rnnoise_get_frame_size() large.
  */
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
+
+/**
+ * Return the size of a multichannel DenoiseMultiState holding up to
+ * RNNOISE_MAX_CHANNELS independent DenoiseState channels.
+ */
+RNNOISE_EXPORT int rnnoise_multi_get_size(void);
+
+/**
+ * Initialize a pre-allocated multichannel state with channels independent
+ * DenoiseState channels.
+ *
+ * Returns 0 on success, RNNOISE_EINVAL if channels is not in
+ * [1, RNNOISE_MAX_CHANNELS], or the initialization error code otherwise.
+ * See: rnnoise_multi_create()
+ */
+RNNOISE_EXPORT int rnnoise_multi_init(DenoiseMultiState *st, RNNModel *model, int channels);
+
+/**
+ * Allocate and initialize a multichannel state with channels independent
+ * DenoiseState channels, each with its own network state and caches.
+ *
+ * If model is NULL the default model is used. Returns NULL (with errno-style
+ * RNNOISE_EINVAL/RNNOISE_ENOMEM available from rnnoise_multi_init) on failure.
+ * The returned pointer MUST be freed with rnnoise_multi_destroy().
+ */
+RNNOISE_EXPORT DenoiseMultiState *rnnoise_multi_create(RNNModel *model, int channels);
+
+/**
+ * Free a multichannel state produced by rnnoise_multi_create().
+ */
+RNNOISE_EXPORT void rnnoise_multi_destroy(DenoiseMultiState *st);
+
+/**
+ * Number of independent channels held by the multichannel state.
+ */
+RNNOISE_EXPORT int rnnoise_multi_get_channels(const DenoiseMultiState *st);
+
+/**
+ * Denoise one frame of interleaved multichannel samples.
+ *
+ * in and out must hold channels * rnnoise_get_frame_size() interleaved
+ * floats. Each channel is denoised by its own independent DenoiseState and
+ * the result is written back interleaved. Returns the maximum per-channel
+ * VAD probability, or RNNOISE_EINVAL if st is NULL.
+ */
+RNNOISE_EXPORT float rnnoise_multi_process_frame(DenoiseMultiState *st, float *out, const float *in);
 
 /**
  * Load a model from a memory buffer

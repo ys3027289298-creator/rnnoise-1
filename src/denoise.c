@@ -87,6 +87,13 @@ struct DenoiseState {
 
 };
 
+struct DenoiseMultiState {
+  int channels;
+  float in[RNNOISE_MAX_CHANNELS * FRAME_SIZE];
+  float out[RNNOISE_MAX_CHANNELS * FRAME_SIZE];
+  DenoiseState states[RNNOISE_MAX_CHANNELS];
+};
+
 static void compute_band_energy(float *bandE, const kiss_fft_cpx *X) {
   int i;
   float sum[NB_BANDS+2] = {0};
@@ -324,6 +331,70 @@ void rnnoise_destroy(DenoiseState *st) {
   free(st);
 }
 
+int rnnoise_multi_get_size(void) {
+  return sizeof(DenoiseMultiState);
+}
+
+int rnnoise_multi_init(DenoiseMultiState *st, RNNModel *model, int channels) {
+  int c;
+  if (st == NULL || channels < 1 || channels > RNNOISE_MAX_CHANNELS)
+    return RNNOISE_EINVAL;
+  memset(st, 0, sizeof(*st));
+  st->channels = channels;
+  for (c = 0; c < channels; c++) {
+    int ret = rnnoise_init(&st->states[c], model);
+    if (ret != 0)
+      return ret;
+  }
+  return 0;
+}
+
+DenoiseMultiState *rnnoise_multi_create(RNNModel *model, int channels) {
+  int ret;
+  DenoiseMultiState *st;
+  if (channels < 1 || channels > RNNOISE_MAX_CHANNELS)
+    return NULL;
+  st = malloc(rnnoise_multi_get_size());
+  if (st == NULL)
+    return NULL;
+  ret = rnnoise_multi_init(st, model, channels);
+  if (ret != 0) {
+    free(st);
+    return NULL;
+  }
+  return st;
+}
+
+void rnnoise_multi_destroy(DenoiseMultiState *st) {
+  free(st);
+}
+
+int rnnoise_multi_get_channels(const DenoiseMultiState *st) {
+  if (st == NULL)
+    return 0;
+  return st->channels;
+}
+
+float rnnoise_multi_process_frame(DenoiseMultiState *st, float *out, const float *in) {
+  int c, i;
+  float vad_max = 0;
+  if (st == NULL)
+    return RNNOISE_EINVAL;
+  for (i = 0; i < FRAME_SIZE; i++)
+    for (c = 0; c < st->channels; c++)
+      st->in[c*FRAME_SIZE + i] = in[i*st->channels + c];
+  for (c = 0; c < st->channels; c++) {
+    float vad = rnnoise_process_frame(&st->states[c],
+      &st->out[c*FRAME_SIZE], &st->in[c*FRAME_SIZE]);
+    if (vad > vad_max)
+      vad_max = vad;
+  }
+  for (i = 0; i < FRAME_SIZE; i++)
+    for (c = 0; c < st->channels; c++)
+      out[i*st->channels + c] = st->out[c*FRAME_SIZE + i];
+  return vad_max;
+}
+
 #if TRAINING
 extern int lowpass;
 extern int band_lp;
@@ -502,4 +573,3 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   RNN_COPY(st->delayed_Exp, Exp, NB_BANDS);
   return vad_prob;
 }
-

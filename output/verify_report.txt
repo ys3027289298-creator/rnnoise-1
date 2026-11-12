@@ -1,0 +1,17 @@
+mono API vs multi(1) bit-exact: True
+channel cap: channels=0 and channels=9 rejected -> RNNOISE_EINVAL/NULL OK
+[sig1_diff_freq] L=440 Hz tone, R=1760 Hz tone
+  output energy    L=5.1976e+02 R=5.2501e+02
+  residual vs mono L=0.0000e+00 R=0.0000e+00 (0.0 means bit-exact)
+  crosstalk R/L=1.01e+00 (+0.0 dB)
+  verdict: channels independent: stereo output equals per-channel mono output
+[sig2_left_only] L active, R silent
+  output energy    L=5.1976e+02 R=0.0000e+00
+  residual vs mono L=0.0000e+00 R=0.0000e+00 (0.0 means bit-exact)
+  crosstalk R/L=0.00e+00 (-327.2 dB)
+  verdict: no crosstalk: silent R stays -327.2 dB below L
+[sig3_in_phase] identical L/R
+  output energy    L=5.2217e+02 R=5.2217e+02
+  residual vs mono L=0.0000e+00 R=0.0000e+00 (0.0 means bit-exact)
+  crosstalk R/L=1.00e+00 (+0.0 dB)
+  verdict: channels independent: stereo output equals per-channel mono output
