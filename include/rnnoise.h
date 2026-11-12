@@ -94,6 +94,19 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
 
 /**
+ * Denoise a frame of signed 16-bit PCM samples
+ *
+ * in and out must be at least rnnoise_get_frame_size() large. The samples
+ * are converted to float, denoised with rnnoise_process_frame(), and
+ * converted back to 16-bit PCM. The back conversion saturates: results
+ * outside the int16 range are clipped to SHRT_MIN/SHRT_MAX instead of
+ * wrapping around.
+ *
+ * Returns the voice activity probability, same as rnnoise_process_frame().
+ */
+RNNOISE_EXPORT float rnnoise_process_frame_int16(DenoiseState *st, short *out, const short *in);
+
+/**
  * Load a model from a memory buffer
  *
  * It must be deallocated with rnnoise_model_free() and the buffer must remain

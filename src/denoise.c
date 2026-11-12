@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include "kiss_fft.h"
 #include "common.h"
 #include "denoise.h"
@@ -503,3 +504,20 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   return vad_prob;
 }
 
+static short float_to_int16_sat(float x) {
+  if (x >= (float)SHRT_MAX) return SHRT_MAX;
+  if (x <= (float)SHRT_MIN) return SHRT_MIN;
+  /* Round to nearest, ties away from zero; value is guaranteed in range. */
+  return (short)(x >= 0 ? x + 0.5f : x - 0.5f);
+}
+
+float rnnoise_process_frame_int16(DenoiseState *st, short *out, const short *in) {
+  int i;
+  float fin[FRAME_SIZE];
+  float fout[FRAME_SIZE];
+  float vad_prob;
+  for (i = 0; i < FRAME_SIZE; i++) fin[i] = (float)in[i];
+  vad_prob = rnnoise_process_frame(st, fout, fin);
+  for (i = 0; i < FRAME_SIZE; i++) out[i] = float_to_int16_sat(fout[i]);
+  return vad_prob;
+}
