@@ -1,0 +1,7 @@
+loader errors: malformed=3 incompatible=4 io=2
+hot swap: max_step=139.424 switch_step=0.281 model_diff=0.061
+failed reloads preserved active model
+shared models: creator references released while states active
+concurrency: 2 inference threads + 1 swap thread, max_step=(141.265, 144.991)
+all hot-swap tests passed
+PASS tests/rnnoise_hot_swap_test (exit status: 0)

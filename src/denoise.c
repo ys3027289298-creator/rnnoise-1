@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include "kiss_fft.h"
 #include "common.h"
 #include "denoise.h"
@@ -42,6 +43,7 @@
 #include "arch.h"
 #include "rnn.h"
 #include "cpu_support.h"
+#include "rnn_atomic.h"
 
 #define SQUARE(x) ((x)*(x))
 
@@ -65,8 +67,20 @@ const int eband20ms[NB_BANDS+2] = {
   0, 2,  4,  6,  8,  10, 12, 15, 18, 21, 24, 28, 32, 36, 41, 47, 53, 60, 68, 77, 87, 98, 110, 124, 140, 157, 176, 198, 223, 251, 282, 317, 356, 400};
 
 
+struct RNNModel {
+  RNNoise net;
+  /* At least one of const_blob and blob is set. */
+  const void *const_blob;
+  void *blob;
+  int blob_len;
+  long volatile refs;
+  int valid;
+};
+
 struct DenoiseState {
-  RNNoise model;
+  RNNModel default_model;
+  RNNModel *model;
+  RNNModel *volatile pending_model;
 #if !TRAINING
   int arch;
 #endif
@@ -224,55 +238,251 @@ static void apply_window(float *x) {
   }
 }
 
-struct RNNModel {
-  /* Set either blob or const_blob. */
-  const void *const_blob;
-  void *blob;
-  int blob_len;
-  FILE *file;
-};
+#if !TRAINING
+static void set_model_error(RNNoiseError *error, RNNoiseError value) {
+  if (error != NULL) *error = value;
+}
+
+static const WeightArray *find_weight_array(const WeightArray *arrays,
+                                            const char *name) {
+  while (arrays->name != NULL && strcmp(arrays->name, name) != 0) arrays++;
+  return arrays;
+}
+
+#ifndef USE_WEIGHTS_FILE
+static int model_has_dimension_mismatch(const WeightArray *expected,
+                                        const WeightArray *loaded) {
+  int i;
+  for (i=0;expected[i].name != NULL;i++) {
+    const WeightArray *array = find_weight_array(loaded, expected[i].name);
+    if (array->name != NULL && array->size != expected[i].size) return 1;
+  }
+  return 0;
+}
+#endif
+
+static int model_is_missing_required_array(const WeightArray *arrays) {
+  static const char * const required_arrays[] = {
+    "conv1_bias", "conv1_weights_float",
+    "conv2_bias", "conv2_subias", "conv2_weights_int8", "conv2_scale",
+    "gru1_input_bias", "gru1_input_subias", "gru1_input_weights_int8",
+    "gru1_input_weights_idx", "gru1_input_scale",
+    "gru1_recurrent_bias", "gru1_recurrent_subias",
+    "gru1_recurrent_weights_int8", "gru1_recurrent_weights_idx",
+    "gru1_recurrent_weights_diag", "gru1_recurrent_scale",
+    "gru2_input_bias", "gru2_input_subias", "gru2_input_weights_int8",
+    "gru2_input_weights_idx", "gru2_input_scale",
+    "gru2_recurrent_bias", "gru2_recurrent_subias",
+    "gru2_recurrent_weights_int8", "gru2_recurrent_weights_idx",
+    "gru2_recurrent_weights_diag", "gru2_recurrent_scale",
+    "gru3_input_bias", "gru3_input_subias", "gru3_input_weights_int8",
+    "gru3_input_weights_idx", "gru3_input_scale",
+    "gru3_recurrent_bias", "gru3_recurrent_subias",
+    "gru3_recurrent_weights_int8", "gru3_recurrent_weights_idx",
+    "gru3_recurrent_weights_diag", "gru3_recurrent_scale",
+    "dense_out_bias", "dense_out_weights_float",
+    "vad_dense_bias", "vad_dense_weights_float",
+    NULL
+  };
+  int i;
+  for (i=0;required_arrays[i] != NULL;i++) {
+    if (find_weight_array(arrays, required_arrays[i])->name == NULL) return 1;
+  }
+  return 0;
+}
+
+static RNNoiseError init_model_net(RNNoise *net, const WeightArray *arrays) {
+  if (init_rnnoise(net, arrays) == 0) return RNNOISE_ERROR_NONE;
+  if (model_is_missing_required_array(arrays))
+    return RNNOISE_ERROR_MALFORMED_MODEL;
+#ifndef USE_WEIGHTS_FILE
+  if (model_has_dimension_mismatch(rnnoise_arrays, arrays))
+    return RNNOISE_ERROR_INCOMPATIBLE_MODEL;
+#endif
+  return RNNOISE_ERROR_INCOMPATIBLE_MODEL;
+}
+
+static void free_model_storage(RNNModel *model) {
+  if (model == NULL) return;
+  if (model->blob != NULL) free(model->blob);
+  free(model);
+}
+
+static RNNModel *model_from_data_ex(const void *ptr, int len, void *owned_blob,
+                                    RNNoiseError *error) {
+  RNNModel *model;
+  WeightArray *list = NULL;
+  RNNoiseError result;
+  int parse_result;
+  set_model_error(error, RNNOISE_ERROR_NONE);
+  if (ptr == NULL || len <= 0) {
+    if (owned_blob != NULL) free(owned_blob);
+    set_model_error(error, RNNOISE_ERROR_INVALID_ARGUMENT);
+    return NULL;
+  }
+  model = malloc(sizeof(*model));
+  if (model == NULL) {
+    if (owned_blob != NULL) free(owned_blob);
+    set_model_error(error, RNNOISE_ERROR_OUT_OF_MEMORY);
+    return NULL;
+  }
+  memset(model, 0, sizeof(*model));
+  model->const_blob = owned_blob == NULL ? ptr : NULL;
+  model->blob = owned_blob;
+  model->blob_len = len;
+  model->refs = 1;
+
+  parse_result = parse_weights(&list, ptr, len);
+  if (parse_result == -2) {
+    free_model_storage(model);
+    set_model_error(error, RNNOISE_ERROR_OUT_OF_MEMORY);
+    return NULL;
+  }
+  if (parse_result <= 0) {
+    free_model_storage(model);
+    set_model_error(error, RNNOISE_ERROR_MALFORMED_MODEL);
+    return NULL;
+  }
+  result = init_model_net(&model->net, list);
+  opus_free(list);
+  if (result != RNNOISE_ERROR_NONE) {
+    free_model_storage(model);
+    set_model_error(error, result);
+    return NULL;
+  }
+  model->valid = 1;
+  return model;
+}
+
+RNNModel *rnnoise_model_from_buffer_ex(const void *ptr, int len,
+                                       RNNoiseError *error) {
+  return model_from_data_ex(ptr, len, NULL, error);
+}
 
 RNNModel *rnnoise_model_from_buffer(const void *ptr, int len) {
+  return rnnoise_model_from_buffer_ex(ptr, len, NULL);
+}
+
+RNNModel *rnnoise_model_from_file_ex(FILE *f, RNNoiseError *error) {
+  long file_size;
+  void *blob;
+  set_model_error(error, RNNOISE_ERROR_NONE);
+  if (f == NULL) {
+    set_model_error(error, RNNOISE_ERROR_INVALID_ARGUMENT);
+    return NULL;
+  }
+  if (fseek(f, 0, SEEK_END) != 0 || (file_size = ftell(f)) < 0 ||
+      fseek(f, 0, SEEK_SET) != 0) {
+    set_model_error(error, RNNOISE_ERROR_IO);
+    return NULL;
+  }
+  if (file_size == 0 || file_size > INT_MAX) {
+    set_model_error(error, RNNOISE_ERROR_MALFORMED_MODEL);
+    return NULL;
+  }
+  blob = malloc((size_t)file_size);
+  if (blob == NULL) {
+    set_model_error(error, RNNOISE_ERROR_OUT_OF_MEMORY);
+    return NULL;
+  }
+  if (fread(blob, (size_t)file_size, 1, f) != 1) {
+    free(blob);
+    set_model_error(error, RNNOISE_ERROR_IO);
+    return NULL;
+  }
+  return model_from_data_ex(blob, (int)file_size, blob, error);
+}
+
+RNNModel *rnnoise_model_from_file(FILE *f) {
+  return rnnoise_model_from_file_ex(f, NULL);
+}
+
+RNNModel *rnnoise_model_from_filename_ex(const char *filename,
+                                         RNNoiseError *error) {
+  FILE *f;
   RNNModel *model;
-  model = malloc(sizeof(*model));
-  model->blob = NULL;
-  model->const_blob = ptr;
-  model->blob_len = len;
+  RNNoiseError load_error = RNNOISE_ERROR_NONE;
+  set_model_error(error, RNNOISE_ERROR_NONE);
+  if (filename == NULL) {
+    set_model_error(error, RNNOISE_ERROR_INVALID_ARGUMENT);
+    return NULL;
+  }
+  f = fopen(filename, "rb");
+  if (f == NULL) {
+    set_model_error(error, RNNOISE_ERROR_IO);
+    return NULL;
+  }
+  model = rnnoise_model_from_file_ex(f, &load_error);
+  fclose(f);
+  if (model == NULL) set_model_error(error, load_error);
   return model;
 }
 
 RNNModel *rnnoise_model_from_filename(const char *filename) {
-  RNNModel *model;
-  FILE *f = fopen(filename, "rb");
-  model = rnnoise_model_from_file(f);
-  model->file = f;
-  return model;
+  return rnnoise_model_from_filename_ex(filename, NULL);
 }
 
-RNNModel *rnnoise_model_from_file(FILE *f) {
-  RNNModel *model;
-  model = malloc(sizeof(*model));
-  model->file = NULL;
-
-  fseek(f, 0, SEEK_END);
-  model->blob_len = ftell(f);
-  fseek(f, 0, SEEK_SET);
-
-  model->const_blob = NULL;
-  model->blob = malloc(model->blob_len);
-  if (fread(model->blob, model->blob_len, 1, f) != 1)
-  {
-    rnnoise_model_free(model);
-    return NULL;
-  }
+RNNModel *rnnoise_model_ref(RNNModel *model) {
+  if (model == NULL) return NULL;
+  rnn_atomic_add(&model->refs, 1);
   return model;
 }
 
 void rnnoise_model_free(RNNModel *model) {
-  if (model->file != NULL) fclose(model->file);
-  if (model->blob != NULL) free(model->blob);
-  free(model);
+  if (model == NULL) return;
+  if (rnn_atomic_add(&model->refs, -1) == 0) free_model_storage(model);
 }
+
+static void release_state_model(DenoiseState *st, RNNModel *model) {
+  if (model != NULL && model != &st->default_model) {
+    rnnoise_model_free(model);
+  }
+}
+
+static void commit_pending_model(DenoiseState *st) {
+  RNNModel *next = rnn_atomic_exchange_ptr((void *volatile *)&st->pending_model,
+                                            NULL);
+  if (next != NULL) {
+    RNNModel *old = st->model;
+    st->model = next;
+    release_state_model(st, old);
+  }
+}
+
+int rnnoise_set_model(DenoiseState *st, RNNModel *model, RNNoiseError *error) {
+  RNNModel *old;
+  set_model_error(error, RNNOISE_ERROR_NONE);
+  if (st == NULL || model == NULL || !model->valid) {
+    set_model_error(error, RNNOISE_ERROR_INVALID_ARGUMENT);
+    return RNNOISE_ERROR_INVALID_ARGUMENT;
+  }
+  rnnoise_model_ref(model);
+  old = rnn_atomic_exchange_ptr((void *volatile *)&st->pending_model, model);
+  if (old != NULL) rnnoise_model_free(old);
+  return RNNOISE_ERROR_NONE;
+}
+
+int rnnoise_reload_model(DenoiseState *st, const char *filename,
+                         RNNoiseError *error) {
+  RNNModel *model;
+  RNNoiseError load_error = RNNOISE_ERROR_NONE;
+  int result;
+  set_model_error(error, RNNOISE_ERROR_NONE);
+  if (st == NULL || filename == NULL) {
+    set_model_error(error, RNNOISE_ERROR_INVALID_ARGUMENT);
+    return RNNOISE_ERROR_INVALID_ARGUMENT;
+  }
+  model = rnnoise_model_from_filename_ex(filename, &load_error);
+  if (model == NULL) {
+    set_model_error(error, load_error);
+    return load_error;
+  }
+  result = rnnoise_set_model(st, model, NULL);
+  rnnoise_model_free(model);
+  set_model_error(error, result);
+  return result;
+}
+#endif /* !TRAINING */
 
 int rnnoise_get_size(void) {
   return sizeof(DenoiseState);
@@ -286,19 +496,19 @@ int rnnoise_init(DenoiseState *st, RNNModel *model) {
   memset(st, 0, sizeof(*st));
 #if !TRAINING
   if (model != NULL) {
-    WeightArray *list;
-    int ret = 1;
-    parse_weights(&list, model->blob ? model->blob : model->const_blob, model->blob_len);
-    if (list != NULL) {
-      ret = init_rnnoise(&st->model, list);
-      opus_free(list);
-    }
-    if (ret != 0) return -1;
+    if (!model->valid) return -1;
+    rnnoise_model_ref(model);
+    st->model = model;
   }
 #ifndef USE_WEIGHTS_FILE
   else {
-    int ret = init_rnnoise(&st->model, rnnoise_arrays);
-    if (ret != 0) return -1;
+    if (init_rnnoise(&st->default_model.net, rnnoise_arrays) != 0) return -1;
+    st->default_model.valid = 1;
+    st->model = &st->default_model;
+  }
+#else
+  else {
+    return -1;
   }
 #endif
   st->arch = rnn_select_arch();
@@ -312,6 +522,7 @@ DenoiseState *rnnoise_create(RNNModel *model) {
   int ret;
   DenoiseState *st;
   st = malloc(rnnoise_get_size());
+  if (st == NULL) return NULL;
   ret = rnnoise_init(st, model);
   if (ret != 0) {
     free(st);
@@ -321,6 +532,15 @@ DenoiseState *rnnoise_create(RNNModel *model) {
 }
 
 void rnnoise_destroy(DenoiseState *st) {
+  if (st == NULL) return;
+#if !TRAINING
+  {
+    RNNModel *pending = rnn_atomic_exchange_ptr(
+        (void *volatile *)&st->pending_model, NULL);
+    if (pending != NULL) release_state_model(st, pending);
+    release_state_model(st, st->model);
+  }
+#endif
   free(st);
 }
 
@@ -468,12 +688,15 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   int silence;
   static const float a_hp[2] = {-1.99599, 0.99600};
   static const float b_hp[2] = {-2, 1};
+#if !TRAINING
+  commit_pending_model(st);
+#endif
   rnn_biquad(x, st->mem_hp_x, in, b_hp, a_hp, FRAME_SIZE);
   silence = rnn_compute_frame_features(st, X, P, Ex, Ep, Exp, features, x);
 
   if (!silence) {
 #if !TRAINING
-    compute_rnn(&st->model, &st->rnn, g, &vad_prob, features, st->arch);
+    compute_rnn(&st->model->net, &st->rnn, g, &vad_prob, features, st->arch);
 #endif
     rnn_pitch_filter(st->delayed_X, st->delayed_P, st->delayed_Ex, st->delayed_Ep, st->delayed_Exp, g);
     for (i=0;i<NB_BANDS;i++) {
@@ -502,4 +725,3 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   RNN_COPY(st->delayed_Exp, Exp, NB_BANDS);
   return vad_prob;
 }
-

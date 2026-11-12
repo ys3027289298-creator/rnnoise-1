@@ -19,6 +19,7 @@ noinst_HEADERS = src/arch.h  \
 		 src/opus_types.h  \
 		 src/pitch.h  \
 		 src/rnn.h  \
+		 src/rnn_atomic.h  \
 		 src/rnnoise_data.h \
 		 src/vec_neon.h \
 		 src/vec.h \
@@ -58,6 +59,22 @@ noinst_PROGRAMS = dump_features dump_weights_blob
 if OP_ENABLE_EXAMPLES
 noinst_PROGRAMS += examples/rnnoise_demo
 endif
+
+check_PROGRAMS = tests/rnnoise_hot_swap_test
+TESTS = tests/rnnoise_hot_swap_test
+AM_TESTS_ENVIRONMENT = RNNOISE_TEST_MODEL="$(abs_builddir)/weights_blob.bin"; export RNNOISE_TEST_MODEL;
+
+tests_rnnoise_hot_swap_test_SOURCES = tests/rnnoise_hot_swap_test.c
+tests_rnnoise_hot_swap_test_CFLAGS = $(AM_CFLAGS)
+tests_rnnoise_hot_swap_test_LDFLAGS = -pthread
+tests_rnnoise_hot_swap_test_LDADD = librnnoise.la $(LIBM)
+
+weights_blob.bin: dump_weights_blob$(EXEEXT)
+	./dump_weights_blob$(EXEEXT)
+
+check-am: weights_blob.bin
+
+CLEANFILES = weights_blob.bin
 
 examples_rnnoise_demo_SOURCES = examples/rnnoise_demo.c
 examples_rnnoise_demo_LDADD = librnnoise.la

@@ -34,13 +34,19 @@
 
 #define SPARSE_BLOCK_SIZE 32
 
+#define PARSE_WEIGHTS_ERROR_MALFORMED -1
+#define PARSE_WEIGHTS_ERROR_OUT_OF_MEMORY -2
+
 static int parse_record(const void **data, int *len, WeightArray *array) {
   WeightHead *h = (WeightHead *)*data;
   if (*len < WEIGHT_BLOCK_SIZE) return -1;
+  if (memcmp(h->head, "DNNw", 4) != 0) return -1;
+  if (h->version != WEIGHT_BLOB_VERSION) return -1;
+  if (h->type < WEIGHT_TYPE_float || h->type > WEIGHT_TYPE_int8) return -1;
+  if (h->size <= 0) return -1;
   if (h->block_size < h->size) return -1;
   if (h->block_size > *len-WEIGHT_BLOCK_SIZE) return -1;
   if (h->name[sizeof(h->name)-1] != 0) return -1;
-  if (h->size < 0) return -1;
   array->name = h->name;
   array->type = h->type;
   array->size = h->size;
@@ -56,21 +62,29 @@ int parse_weights(WeightArray **list, const void *data, int len)
   int nb_arrays=0;
   int capacity=20;
   *list = calloc(capacity*sizeof(WeightArray), 1);
+  if (*list == NULL) return PARSE_WEIGHTS_ERROR_OUT_OF_MEMORY;
   while (len > 0) {
     int ret;
     WeightArray array = {NULL, 0, 0, 0};
     ret = parse_record(&data, &len, &array);
     if (ret > 0) {
       if (nb_arrays+1 >= capacity) {
+        WeightArray *new_list;
         /* Make sure there's room for the ending NULL element too. */
         capacity = capacity*3/2;
-        *list = realloc(*list, capacity*sizeof(WeightArray));
+        new_list = realloc(*list, capacity*sizeof(WeightArray));
+        if (new_list == NULL) {
+          free(*list);
+          *list = NULL;
+          return PARSE_WEIGHTS_ERROR_OUT_OF_MEMORY;
+        }
+        *list = new_list;
       }
       (*list)[nb_arrays++] = array;
     } else {
       free(*list);
       *list = NULL;
-      return -1;
+      return PARSE_WEIGHTS_ERROR_MALFORMED;
     }
   }
   (*list)[nb_arrays].name=NULL;

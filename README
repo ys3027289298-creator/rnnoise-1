@@ -110,9 +110,28 @@ The model format has changed since v0.1.1. Models now use a binary
 "machine endian" format. To output a model in that format, build RNNoise
 with that model and use the dump_weights_blob executable to output a
 weights_blob.bin binary file. That file can then be used with the
-rnnoise_model_from_file() API call. Note that the model object MUST NOT
-be deleted while the RNNoise state is active and the file MUST NOT
-be closed.
+rnnoise_model_from_file() API call. The file is copied into the model object
+and may be closed after loading.
+
+Loaded models are immutable and reference-counted. A model can be shared by
+multiple DenoiseState objects, and a state keeps the model alive after the
+caller releases its reference. Each state may use a different model.
+
+Models can also be changed without recreating the DenoiseState. The
+rnnoise_set_model() call queues a model for the next frame boundary, and
+rnnoise_reload_model() loads and validates a model from a file before queuing
+it. The switch is therefore never performed in the middle of a frame. A
+model swap is safe while another thread is processing audio; the queued model
+is fully parsed and validated before it becomes visible to the processing
+thread.
+
+Model loading failures leave the active model and all processing state
+unchanged. The rnnoise_model_*_ex() and rnnoise_reload_model() APIs report
+RNNOISE_ERROR_MALFORMED_MODEL for corrupt files and
+RNNOISE_ERROR_INCOMPATIBLE_MODEL for models whose dimensions do not match the
+running build. State and model processing history is preserved across a
+successful switch, so the first frame with the new model continues from the
+previous frame.
 
 To avoid including the default model in the build (e.g. to reduce download
 size) and rely only on model loading, add -DUSE_WEIGHTS_FILE to the CFLAGS.
