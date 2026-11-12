@@ -124,6 +124,39 @@ RNNOISE_EXPORT RNNModel *rnnoise_model_from_filename(const char *filename);
  */
 RNNOISE_EXPORT void rnnoise_model_free(RNNModel *model);
 
+/**
+ * Return the number of samples processed per frame at sample_rate Hz.
+ *
+ * The frame length is derived from the native 480-sample (10 ms) frame:
+ * sample_rate/100 samples. Supported sample rates are 48000, 44100 and 32000;
+ * other rates return -1.
+ */
+RNNOISE_EXPORT int rnnoise_sr_get_frame_size(int sample_rate);
+
+/**
+ * Allocate and initialize a denoiser for the given input sample rate.
+ *
+ * 44100 Hz and 32000 Hz inputs are anti-alias filtered and resampled to
+ * 48000 Hz internally, denoised, and resampled back to sample_rate. At
+ * 48000 Hz the native processing path is used unchanged.
+ *
+ * The returned pointer MUST be freed with rnnoise_sr_destroy().
+ */
+RNNOISE_EXPORT DenoiseState *rnnoise_sr_create(RNNModel *model, int sample_rate);
+
+/**
+ * Denoise one frame at the sample rate given to rnnoise_sr_create().
+ *
+ * in and out must each hold rnnoise_sr_get_frame_size(sample_rate) samples,
+ * i.e. the same number of samples is consumed and produced on every call.
+ */
+RNNOISE_EXPORT float rnnoise_sr_process_frame(DenoiseState *st, float *out, const float *in);
+
+/**
+ * Free a DenoiseState produced by rnnoise_sr_create().
+ */
+RNNOISE_EXPORT void rnnoise_sr_destroy(DenoiseState *st);
+
 #ifdef __cplusplus
 }
 #endif

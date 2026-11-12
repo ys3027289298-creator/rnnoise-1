@@ -1,0 +1,9 @@
+sine    rate=48000 in=9600 out=9600 rms=7914.7279 peak_dev_hz=0.0
+sine    rate=44100 in=8820 out=8820 rms=5603.5748 peak_dev_hz=0.0
+sine    rate=32000 in=6400 out=6400 rms=1780.7421 peak_dev_hz=0.0
+noise   rate=48000 in=9600 out=9600 rms=5.5609 peak_dev_hz=0.0
+noise   rate=44100 in=8820 out=8820 rms=21.2921 peak_dev_hz=0.0
+noise   rate=32000 in=6400 out=6400 rms=9.5868 peak_dev_hz=0.0
+silence rate=48000 in=9600 out=9600 rms=0.0000 peak_dev_hz=0.0
+silence rate=44100 in=8820 out=8820 rms=0.0000 peak_dev_hz=0.0
+silence rate=32000 in=6400 out=6400 rms=0.0000 peak_dev_hz=0.0

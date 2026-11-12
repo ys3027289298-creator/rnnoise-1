@@ -503,3 +503,160 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   return vad_prob;
 }
 
+/* Sample-rate adaptation layer.
+
+   The core denoiser operates at 48 kHz on FRAME_SIZE (480) sample frames.
+   This wrapper resamples 44.1 kHz and 32 kHz input up to 48 kHz before
+   denoising and back down afterwards.  Resampling is performed by a
+   windowed-sinc (Hann window) polyphase FIR filter, so both up- and
+   downsampling are properly band-limited instead of relying on linear
+   interpolation.  The design is fully streaming: a one-block delay provides
+   the filter lookahead while every call still consumes and produces exactly
+   one frame worth of samples at the caller's sample rate. */
+
+#define RESAMP_HALF 16
+#define RESAMP_TAPS (2*RESAMP_HALF)
+#define RESAMP_PHASES 256
+#define RESAMP_HIST 1024
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+struct Resampler {
+  int L;
+  int M;
+  int block_in;
+  int block_out;
+  float table[RESAMP_PHASES][RESAMP_TAPS];
+  float hist[RESAMP_HIST];
+  int primed;
+};
+
+struct SRDenoiseState {
+  DenoiseState core;
+  int sample_rate;
+  int frame;
+  struct Resampler up;
+  struct Resampler down;
+  float in48[2*FRAME_SIZE];
+  float out48[2*FRAME_SIZE];
+};
+
+static int sr_gcd(int a, int b) {
+  while (b) {
+    int t = a % b;
+    a = b;
+    b = t;
+  }
+  return a;
+}
+
+static void resampler_init(struct Resampler *r, int f_in, int f_out) {
+  int g;
+  double ratio, cutoff;
+  int p, j;
+  memset(r, 0, sizeof(*r));
+  g = sr_gcd(f_in, f_out);
+  r->L = f_out/g;
+  r->M = f_in/g;
+  r->block_in = (int) ((long long) FRAME_SIZE*f_in/48000);
+  r->block_out = (int) ((long long) FRAME_SIZE*f_out/48000);
+  ratio = (double) f_in/f_out;
+  cutoff = 0.97*(ratio < 1.0 ? ratio : 1.0);
+  /* Polyphase decomposition of the windowed-sinc prototype filter. */
+  for (p=0;p<RESAMP_PHASES;p++) {
+    double frac = (double) p/RESAMP_PHASES;
+    double center = RESAMP_HALF - frac;
+    double norm = 0;
+    for (j=0;j<RESAMP_TAPS;j++) {
+      double d = j-center;
+      double w = 0.5 - 0.5*cos(M_PI*(j+1.0)/RESAMP_TAPS);
+      double h = w*cutoff*sin(M_PI*cutoff*d)/(M_PI*cutoff*d + (d==0));
+      if (j==RESAMP_HALF-1) h = w*cutoff;
+      r->table[p][j] = (float) h;
+      norm += h;
+    }
+    for (j=0;j<RESAMP_TAPS;j++) r->table[p][j] = (float) (r->table[p][j]/norm);
+  }
+}
+
+static float resampler_getx(const struct Resampler *r, int idx, int total) {
+  if (idx < 0 || idx >= total) return 0.f;
+  return r->hist[idx % RESAMP_HIST];
+}
+
+/* Produce one output block.  The block is delayed by one input block so the
+   filter lookahead (RESAMP_HALF samples of the following block) is available.
+   The first call stores the block and outputs zeros, which is the ordinary
+   startup transient of a streaming resampler. */
+static void resampler_process(struct Resampler *r, const float *in, float *out) {
+  int i, k, total;
+  if (!r->primed) {
+    r->primed = 1;
+    for (i=0;i<r->block_in;i++)
+      r->hist[i] = in[i];
+    memset(out, 0, r->block_out*sizeof(float));
+    return;
+  }
+  /* Make the new block available in the history, then render the block that
+     arrived on the previous call; its lookahead now lies inside the history. */
+  total = 2*r->block_in;
+  for (i=0;i<r->block_in;i++)
+    r->hist[r->block_in+i] = in[i];
+  for (k=0;k<r->block_out;k++) {
+    double center = (double) k*r->M/r->L;
+    int base = (int) center;
+    int start = base-RESAMP_HALF+1;
+    double phase_f = center-base;
+    int p = (int) (phase_f*RESAMP_PHASES);
+    double acc = 0;
+    if (p >= RESAMP_PHASES) p = RESAMP_PHASES-1;
+    for (i=0;i<RESAMP_TAPS;i++)
+      acc += r->table[p][i]*resampler_getx(r, start+i, total);
+    out[k] = (float) acc;
+  }
+  for (i=0;i<r->block_in;i++) r->hist[i] = r->hist[r->block_in+i];
+}
+
+int rnnoise_sr_get_frame_size(int sample_rate) {
+  if (sample_rate != 48000 && sample_rate != 44100 && sample_rate != 32000)
+    return -1;
+  return FRAME_SIZE*sample_rate/48000;
+}
+
+DenoiseState *rnnoise_sr_create(RNNModel *model, int sample_rate) {
+  struct SRDenoiseState *sr;
+  int frame = rnnoise_sr_get_frame_size(sample_rate);
+  if (frame < 0) return NULL;
+  sr = (struct SRDenoiseState *) malloc(sizeof(*sr));
+  if (sr == NULL) return NULL;
+  memset(sr, 0, sizeof(*sr));
+  if (rnnoise_init(&sr->core, model) != 0) {
+    free(sr);
+    return NULL;
+  }
+  sr->sample_rate = sample_rate;
+  sr->frame = frame;
+  if (sample_rate != 48000) {
+    resampler_init(&sr->up, sample_rate, 48000);
+    resampler_init(&sr->down, 48000, sample_rate);
+  }
+  return &sr->core;
+}
+
+float rnnoise_sr_process_frame(DenoiseState *st, float *out, const float *in) {
+  struct SRDenoiseState *sr = (struct SRDenoiseState *) st;
+  float vad;
+  if (sr->sample_rate == 48000)
+    return rnnoise_process_frame(&sr->core, out, in);
+  resampler_process(&sr->up, in, sr->in48);
+  vad = rnnoise_process_frame(&sr->core, sr->out48, sr->in48);
+  resampler_process(&sr->down, sr->out48, out);
+  return vad;
+}
+
+void rnnoise_sr_destroy(DenoiseState *st) {
+  if (st == NULL) return;
+  free((struct SRDenoiseState *) st);
+}
