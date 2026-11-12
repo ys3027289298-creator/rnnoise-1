@@ -26,6 +26,7 @@
 */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include "rnnoise.h"
 
 #define FRAME_SIZE 480
@@ -43,8 +44,12 @@ int main(int argc, char **argv) {
   st = rnnoise_create(NULL);
 #endif
 
-  if (argc!=3) {
-    fprintf(stderr, "usage: %s <noisy speech> <output denoised>\n", argv[0]);
+  if (argc!=3 && argc!=4) {
+    fprintf(stderr, "usage: %s <noisy speech> <output denoised> [dry/wet ratio 0..1]\n", argv[0]);
+    return 1;
+  }
+  if (argc==4 && rnnoise_set_mix_ratio(st, strtof(argv[3], NULL)) != RNNOISE_OK) {
+    fprintf(stderr, "invalid mix ratio '%s': must be between 0 and 1\n", argv[3]);
     return 1;
   }
   f1 = fopen(argv[1], "rb");

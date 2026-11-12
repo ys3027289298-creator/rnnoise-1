@@ -79,6 +79,7 @@ struct DenoiseState {
   int last_period;
   float mem_hp_x[2];
   float lastg[NB_BANDS];
+  float mix_ratio;
   RNNState rnn;
   kiss_fft_cpx delayed_X[FREQ_SIZE];
   kiss_fft_cpx delayed_P[FREQ_SIZE];
@@ -284,6 +285,7 @@ int rnnoise_get_frame_size(void) {
 
 int rnnoise_init(DenoiseState *st, RNNModel *model) {
   memset(st, 0, sizeof(*st));
+  st->mix_ratio = 1.f;
 #if !TRAINING
   if (model != NULL) {
     WeightArray *list;
@@ -322,6 +324,13 @@ DenoiseState *rnnoise_create(RNNModel *model) {
 
 void rnnoise_destroy(DenoiseState *st) {
   free(st);
+}
+
+int rnnoise_set_mix_ratio(DenoiseState *st, float ratio) {
+  if (st == NULL || isnan(ratio) || ratio < 0.f || ratio > 1.f)
+    return RNNOISE_EINVAL;
+  st->mix_ratio = ratio;
+  return RNNOISE_OK;
 }
 
 #if TRAINING
@@ -397,12 +406,19 @@ int rnn_compute_frame_features(DenoiseState *st, kiss_fft_cpx *X, kiss_fft_cpx *
   return TRAINING && E < 0.1;
 }
 
-static void frame_synthesis(DenoiseState *st, float *out, const kiss_fft_cpx *y) {
+static void frame_synthesis(DenoiseState *st, float *out, const float *in, const kiss_fft_cpx *y) {
   float x[WINDOW_SIZE];
   int i;
   inverse_transform(x, y);
   apply_window(x);
-  for (i=0;i<FRAME_SIZE;i++) out[i] = x[i] + st->synthesis_mem[i];
+  if (st->mix_ratio == 1.f) {
+    for (i=0;i<FRAME_SIZE;i++) out[i] = x[i] + st->synthesis_mem[i];
+  } else {
+    for (i=0;i<FRAME_SIZE;i++) {
+      float wet = x[i] + st->synthesis_mem[i];
+      out[i] = in[i]*(1.f - st->mix_ratio) + wet*st->mix_ratio;
+    }
+  }
   RNN_COPY(st->synthesis_mem, &x[FRAME_SIZE], FRAME_SIZE);
 }
 
@@ -493,7 +509,7 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
     }
 #endif
   }
-  frame_synthesis(st, out, st->delayed_X);
+  frame_synthesis(st, out, in, st->delayed_X);
 
   RNN_COPY(st->delayed_X, X, FREQ_SIZE);
   RNN_COPY(st->delayed_P, P, FREQ_SIZE);
@@ -502,4 +518,3 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   RNN_COPY(st->delayed_Exp, Exp, NB_BANDS);
   return vad_prob;
 }
-

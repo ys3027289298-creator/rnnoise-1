@@ -51,6 +51,12 @@ extern "C" {
 typedef struct DenoiseState DenoiseState;
 typedef struct RNNModel RNNModel;
 
+/** Return value on success. */
+#define RNNOISE_OK 0
+
+/** Return value when an argument is invalid, e.g. a value outside its valid range. */
+#define RNNOISE_EINVAL (-1)
+
 /**
  * Return the size of DenoiseState
  */
@@ -92,6 +98,19 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
  * in and out must be at least rnnoise_get_frame_size() large.
  */
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
+
+/**
+ * Set the dry/wet mixing ratio applied to subsequent frames.
+ *
+ * ratio must be in [0, 1]: 0 outputs the unprocessed (dry) input, 1 outputs
+ * the fully denoised (wet) signal, values in between output
+ * dry*(1-ratio) + wet*ratio. The default is 1, which preserves the historical
+ * full-denoising behavior.
+ *
+ * Returns RNNOISE_OK on success or RNNOISE_EINVAL if st is NULL or ratio is
+ * not in [0, 1] (including NaN); in the error case the current ratio is kept.
+ */
+RNNOISE_EXPORT int rnnoise_set_mix_ratio(DenoiseState *st, float ratio);
 
 /**
  * Load a model from a memory buffer
