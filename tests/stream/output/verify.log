@@ -1,0 +1,7 @@
+block=ref   in=144000 out=144000 rms=0.24417362
+block=480   in=144000 out=144000 rms=0.24417362 maxdiff=0 flush=0
+block=128   in=144000 out=144000 rms=0.24417362 maxdiff=0 flush=0
+block=300   in=144000 out=144000 rms=0.24417362 maxdiff=0 flush=0
+block=2000  in=144000 out=144000 rms=0.24417362 maxdiff=0 flush=0
+flush check: trimmed=143383 out=143383 flushed=343
+RESULT: PASS sample-exact for all block sizes

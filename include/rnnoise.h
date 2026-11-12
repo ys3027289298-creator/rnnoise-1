@@ -94,6 +94,50 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
 
 /**
+ * Streaming adapter state for arbitrary-length blocks.
+ *
+ * Buffers input leftovers until rnnoise_get_frame_size() samples are
+ * available, so callers may feed blocks of any length.
+ */
+typedef struct RNNStreamState RNNStreamState;
+
+/**
+ * Allocate and initialize a streaming adapter.
+ *
+ * If model is NULL the default model is used.
+ *
+ * The returned pointer MUST be freed with rnnoise_stream_destroy().
+ */
+RNNOISE_EXPORT RNNStreamState *rnnoise_stream_create(RNNModel *model);
+
+/**
+ * Free a streaming adapter produced by rnnoise_stream_create().
+ */
+RNNOISE_EXPORT void rnnoise_stream_destroy(RNNStreamState *s);
+
+/**
+ * Denoise a block of n samples.
+ *
+ * n may have any value (including 0). Leftover input samples are buffered
+ * internally and completed by later calls. up to n denoised samples are
+ * written to out; the output never lags the input by more than one frame
+ * (rnnoise_get_frame_size() samples).
+ *
+ * Returns the number of samples written to out.
+ */
+RNNOISE_EXPORT int rnnoise_stream_process(RNNStreamState *s, float *out, const float *in, int n);
+
+/**
+ * Process the samples still buffered at the end of the stream.
+ *
+ * The remaining samples are zero-padded to a full frame and processed; at
+ * most one frame of samples is written to out.
+ *
+ * Returns the number of remaining samples written to out.
+ */
+RNNOISE_EXPORT int rnnoise_stream_flush(RNNStreamState *s, float *out);
+
+/**
  * Load a model from a memory buffer
  *
  * It must be deallocated with rnnoise_model_free() and the buffer must remain
