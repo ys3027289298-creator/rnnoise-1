@@ -1,0 +1,7 @@
+mkdir -p /home/ys/feedback/uidreczz28YnG9m2z9K/packer/../output
+/home/ys/feedback/uidreczz28YnG9m2z9K/packer/build/test_qoi /home/ys/feedback/uidreczz28YnG9m2z9K/packer/../output
+[gradient] raw=65536 png=452 bytes qoi=57554 bytes (vs png +12633.2%) diff_pixels=0
+[solid] raw=65536 png=97 bytes qoi=291 bytes (vs png +200.0%) diff_pixels=0
+[transparent] raw=65536 png=127 bytes qoi=647 bytes (vs png +409.4%) diff_pixels=0
+[noise] raw=65536 png=65826 bytes qoi=81891 bytes (vs png +24.4%) diff_pixels=0
+all 4 cases: reference decoder round-trip exact, 0 differing pixels
