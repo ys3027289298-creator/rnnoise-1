@@ -94,6 +94,15 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
 
 /**
+ * Return the voice activity probability (0 to 1) for the last processed frame
+ *
+ * Must be called right after rnnoise_process_frame(); the returned value is
+ * the posterior probability produced by the model's VAD output for that same
+ * frame (0 on silence frames where the model is not evaluated).
+ */
+RNNOISE_EXPORT float rnnoise_get_vad_prob(DenoiseState *st);
+
+/**
  * Load a model from a memory buffer
  *
  * It must be deallocated with rnnoise_model_free() and the buffer must remain

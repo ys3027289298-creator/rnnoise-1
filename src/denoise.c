@@ -84,6 +84,8 @@ struct DenoiseState {
   kiss_fft_cpx delayed_P[FREQ_SIZE];
   float delayed_Ex[NB_BANDS], delayed_Ep[NB_BANDS];
   float delayed_Exp[NB_BANDS];
+  /* Model VAD posterior for the most recently processed frame. */
+  float vad_prob;
 
 };
 
@@ -324,6 +326,10 @@ void rnnoise_destroy(DenoiseState *st) {
   free(st);
 }
 
+float rnnoise_get_vad_prob(DenoiseState *st) {
+  return st->vad_prob;
+}
+
 #if TRAINING
 extern int lowpass;
 extern int band_lp;
@@ -500,6 +506,6 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
   RNN_COPY(st->delayed_Ex, Ex, NB_BANDS);
   RNN_COPY(st->delayed_Ep, Ep, NB_BANDS);
   RNN_COPY(st->delayed_Exp, Exp, NB_BANDS);
+  st->vad_prob = vad_prob;
   return vad_prob;
 }
-
